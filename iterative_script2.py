@@ -620,8 +620,11 @@ def main(args):
     # Create the directory
     dir_path.mkdir(parents=True, exist_ok=True)
     
-    
-    filename = f"summaries_{experiment}.npz"
+    # Add compression stage to filename for hybrid experiments
+    if experiment == "hybrid":
+        filename = f"summaries_{experiment}_stage{args.compression_stage}.npz"
+    else:
+        filename = f"summaries_{experiment}.npz"
     outfname = dir_path / filename
 
     np.savez(outfname,
@@ -629,7 +632,8 @@ def main(args):
              summs_val=summ_val,   theta_val=th_val,
              summs_test=summ_test, theta_test=th_te,
              n_summs_pk=args.pk_summaries,
-             n_summs_bk=args.bk_summaries)
+             n_summs_bk=args.bk_summaries,
+             compression_stage=args.compression_stage if experiment == "hybrid" else None)
 
     # -------------------------------------------------------------------------
     print(f"Saved compressed summaries to {outfname}")
@@ -645,7 +649,10 @@ def main(args):
     # set common manual seed
     torch.manual_seed(args.seed)
 
-    outdir = args.outfile + "npe_%s"%(experiment)
+    if experiment == "hybrid":
+        outdir = args.outfile + "npe_%s_stage%d"%(experiment, args.compression_stage)
+    else:
+        outdir = args.outfile + "npe_%s"%(experiment)
     
     activation = "LeakyReLU"
     n_hidden = [128, 128, 6]
@@ -723,7 +730,10 @@ def main(args):
     
     print(f"saved fiducial inference chains to {args.outfile}")
 
-    outchains = args.outfile + "fiducial_chains_%s"%(experiment)
+    if experiment == "hybrid":
+        outchains = args.outfile + "fiducial_chains_%s_stage%d"%(experiment, args.compression_stage)
+    else:
+        outchains = args.outfile + "fiducial_chains_%s"%(experiment)
     np.savez(outchains,
              chains=all_fid_chains,
            )
@@ -731,7 +741,10 @@ def main(args):
     # run validation tests
     print('running validation checks on Quijote')
 
-    plotdir = args.outfile + "quijote_plots_%s"%(experiment)
+    if experiment == "hybrid":
+        plotdir = args.outfile + "quijote_plots_%s_stage%d"%(experiment, args.compression_stage)
+    else:
+        plotdir = args.outfile + "quijote_plots_%s"%(experiment)
     Path(plotdir).mkdir(parents=True, exist_ok=True)  # 
 
     
