@@ -110,7 +110,8 @@ def init_models(experiment: str,
                 mdn_components: int,
                 # n_summs_hybrid: int,
                 theta_train: np.ndarray,
-                inds: Tuple,
+                inds: Tuple = (0, 73),
+                pk_cut: int = 94,
                 pk_compress: Callable = None):
 
 
@@ -218,7 +219,7 @@ def init_models(experiment: str,
         __call__ = log_prob
 
 
-    model_pk = CompressPk(n_summaries=n_summs_pk, n_params=n_params, n_components=mdn_components, cut=inds[0])
+    model_pk = CompressPk(n_summaries=n_summs_pk, n_params=n_params, n_components=mdn_components, cut=pk_cut)
     model_bk = CompressBk(n_summaries=n_summs_bk, n_params=n_params, n_components=mdn_components, inds=inds)
     pk_net = pk_compress if pk_compress is not None else lambda x: x
     model_hybrid = HybridNet(n_summaries=n_summs_bk, n_params=n_params, n_components=mdn_components, inds=inds, pk_net=pk_compress)
@@ -469,15 +470,17 @@ def main(args):
     
         key = jr.PRNGKey(args.seed)
 
-        # Initial iteration: train PK compressor on indexes[0]
-        print(f"Training PK compressor on indexes[0]={indexes[0]} …")
+        # Initial iteration: train PK compressor with pk_cut from first index
+        pk_cut_stage0 = indexes[0][0]
+        print(f"Training PK compressor with pk_cut={pk_cut_stage0}, indexes[0]={indexes[0]} …")
         model_pk, _ = init_models(experiment,
                                   n_params,
                                   n_summs_pk=args.pk_summaries,
                                   n_summs_bk=args.bk_summaries,
                                   mdn_components=args.mdn_components,
                                   theta_train=th_tr,
-                                  inds=indexes[0])
+                                  inds=indexes[0],
+                                  pk_cut=pk_cut_stage0)
     
         w_pk, _ = run_embedding_loop(model_pk, key,
                                      (x_tr, th_tr), (x_val, th_val),
@@ -486,14 +489,15 @@ def main(args):
         pk_net = lambda d: model_pk.apply(w_pk, d, method=model_pk.get_embed)
 
         # First hybrid stage on indexes[0]
-        print(f"Training hybrid compressor on stage 0 (indexes[0]={indexes[0]}) …")
+        print(f"Training hybrid compressor on stage 0 (pk_cut={pk_cut_stage0}, indexes[0]={indexes[0]}) …")
         _, model_hybrid = init_models(experiment,
                                       n_params,
                                       n_summs_pk=args.pk_summaries,
                                       n_summs_bk=args.bk_summaries,
                                       mdn_components=args.mdn_components,
                                       theta_train=th_tr,
-                                      inds=indexes[0], 
+                                      inds=indexes[0],
+                                      pk_cut=pk_cut_stage0,
                                       pk_compress=pk_net)
     
         w_hybrid, _ = run_embedding_loop(model_hybrid, key,
@@ -502,7 +506,9 @@ def main(args):
 
         # Cumulative compression: iterate through remaining stages up to compression_stage
         for stage_idx in range(1, args.compression_stage + 1):
-            print(f"Training hybrid compressor on stage {stage_idx} (indexes[{stage_idx}]={indexes[stage_idx]}) …")
+            # pk_cut for this stage is the start of the current BK range
+            pk_cut_current = indexes[stage_idx][0]
+            print(f"Training hybrid compressor on stage {stage_idx} (pk_cut={pk_cut_current}, indexes[{stage_idx}]={indexes[stage_idx]}) …")
             
             # Previous hybrid becomes new pk_net
             pk_net = lambda d, w=w_hybrid, m=model_hybrid: m.apply(w, d, method=m.get_embed)
@@ -513,7 +519,8 @@ def main(args):
                                           n_summs_bk=args.bk_summaries,
                                           mdn_components=args.mdn_components,
                                           theta_train=th_tr,
-                                          inds=indexes[stage_idx], 
+                                          inds=indexes[stage_idx],
+                                          pk_cut=pk_cut_current,
                                           pk_compress=pk_net)
 
             w_hybrid, _ = run_embedding_loop(model_hybrid, key,
@@ -534,7 +541,8 @@ def main(args):
                                              n_summs_pk=args.pk_summaries,
                                              n_summs_bk=args.bk_summaries,
                                              mdn_components=args.mdn_components,
-                                             theta_train=th_tr)
+                                             theta_train=th_tr,
+                                             pk_cut=args.pk_cut)
     
         # train PK compressor ------------------------------------------------------
         print("Training Pk compressor …")
@@ -572,7 +580,8 @@ def main(args):
                                              n_summs_pk=args.pk_summaries,
                                              n_summs_bk=args.bk_summaries,
                                              mdn_components=args.mdn_components,
-                                             theta_train=th_tr)
+                                             theta_train=th_tr,
+                                             pk_cut=args.pk_cut)
     
         # train PK compressor ------------------------------------------------------
         print("Training PK compressor …")
