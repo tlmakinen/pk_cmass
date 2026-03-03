@@ -460,89 +460,71 @@ def main(args):
         mean_pca, w_pca = fit_pca(x_tr, n_components=args.pk_summaries + args.bk_summaries)
 
         
-        indexes = [(73,307), (307,415)]
+        # indexes = [(73,307), (307,415)]
+        indexes = [(63,126), (126,188), (188,307), (307,415)] # cumulative indexes
 
+        # Validate compression stage argument
+        if args.compression_stage < 0 or args.compression_stage >= len(indexes):
+            raise ValueError(f"compression_stage must be between 0 and {len(indexes)-1}, got {args.compression_stage}")
     
         key = jr.PRNGKey(args.seed)
 
-        # iteration 1
+        # Initial iteration: train PK compressor on indexes[0]
+        print(f"Training PK compressor on indexes[0]={indexes[0]} …")
         model_pk, _ = init_models(experiment,
-                                             n_params,
-                                             n_summs_pk=args.pk_summaries,
-                                             n_summs_bk=args.bk_summaries,
-                                             mdn_components=args.mdn_components,
-                                             theta_train=th_tr,
-                                             inds=indexes[0])
+                                  n_params,
+                                  n_summs_pk=args.pk_summaries,
+                                  n_summs_bk=args.bk_summaries,
+                                  mdn_components=args.mdn_components,
+                                  theta_train=th_tr,
+                                  inds=indexes[0])
     
-        # train PK compressor ------------------------------------------------------
-        print("Training PK compressor …")
         w_pk, _ = run_embedding_loop(model_pk, key,
                                      (x_tr, th_tr), (x_val, th_val),
                                      epochs=args.epochs, n_params=n_params)
     
-        # global pk_net
         pk_net = lambda d: model_pk.apply(w_pk, d, method=model_pk.get_embed)
 
-        _, model_hybrid0 = init_models(experiment,
-                                        n_params,
-                                        n_summs_pk=args.pk_summaries,
-                                        n_summs_bk=args.bk_summaries,
-                                        mdn_components=args.mdn_components,
-                                        theta_train=th_tr,
-                                        inds=indexes[0], pk_compress=pk_net)
+        # First hybrid stage on indexes[0]
+        print(f"Training hybrid compressor on stage 0 (indexes[0]={indexes[0]}) …")
+        _, model_hybrid = init_models(experiment,
+                                      n_params,
+                                      n_summs_pk=args.pk_summaries,
+                                      n_summs_bk=args.bk_summaries,
+                                      mdn_components=args.mdn_components,
+                                      theta_train=th_tr,
+                                      inds=indexes[0], 
+                                      pk_compress=pk_net)
     
-    
-        # train hybrid -------------------------------------------------------------
-        print("Training hybrid compressor 1 …")
-        w_hybrid0, _ = run_embedding_loop(model_hybrid0, key,
-                                         (x_tr, th_tr), (x_val, th_val),
-                                         epochs=args.epochs, n_params=n_params)
+        w_hybrid, _ = run_embedding_loop(model_hybrid, key,
+                                        (x_tr, th_tr), (x_val, th_val),
+                                        epochs=args.epochs, n_params=n_params)
 
+        # Cumulative compression: iterate through remaining stages up to compression_stage
+        for stage_idx in range(1, args.compression_stage + 1):
+            print(f"Training hybrid compressor on stage {stage_idx} (indexes[{stage_idx}]={indexes[stage_idx]}) …")
+            
+            # Previous hybrid becomes new pk_net
+            pk_net = lambda d, w=w_hybrid, m=model_hybrid: m.apply(w, d, method=m.get_embed)
 
+            _, model_hybrid = init_models(experiment,
+                                          n_params,
+                                          n_summs_pk=args.pk_summaries,
+                                          n_summs_bk=args.bk_summaries,
+                                          mdn_components=args.mdn_components,
+                                          theta_train=th_tr,
+                                          inds=indexes[stage_idx], 
+                                          pk_compress=pk_net)
 
-        # iteration 2 --> hybrid becomes new pk net, continue with hybrid compression
-        pk_net = lambda d: model_hybrid0.apply(w_hybrid0, d, method=model_hybrid0.get_embed)
+            w_hybrid, _ = run_embedding_loop(model_hybrid, key,
+                                            (x_tr, th_tr), (x_val, th_val),
+                                            epochs=args.epochs, n_params=n_params)
 
-        _, model_hybrid1 = init_models(experiment,
-                                        n_params,
-                                        n_summs_pk=args.pk_summaries,
-                                        n_summs_bk=args.bk_summaries,
-                                        mdn_components=args.mdn_components,
-                                        theta_train=th_tr,
-                                        inds=indexes[1], pk_compress=pk_net)
-
-
-        print("Training hybrid compressor 2 …")
-        w_hybrid1, _ = run_embedding_loop(model_hybrid1, key,
-                                         (x_tr, th_tr), (x_val, th_val),
-                                         epochs=args.epochs, n_params=n_params)
-
-
-
-    
-        # iteration 3 --> hybrid becomes new pk net, continue with hybrid compression
-        # _, model_hybrid2 = init_models(experiment,
-        #                                 n_params,
-        #                                 n_summs_pk=args.pk_summaries,
-        #                                 n_summs_bk=args.bk_summaries,
-        #                                 mdn_components=args.mdn_components,
-        #                                 theta_train=th_tr,
-        #                                 inds=indexes[2])
-
-        # pk_net = lambda d: model_hybrid1.apply(w_hybrid1, d, method=model_hybrid1.get_embed)
-
-        # print("Training hybrid compressor 2 …")
-        # w_hybrid2, _ = run_embedding_loop(model_hybrid2, key,
-        #                                  (x_tr, th_tr), (x_val, th_val),
-        #                                  epochs=args.epochs, n_params=n_params)
-
-
-
-    
-        # obtain summaries ---------------------------------------------------------
-        summ_train = summaries_from_model(model_hybrid1, w_hybrid1, x_tr)
-        summ_val   = summaries_from_model(model_hybrid1, w_hybrid1, x_val)
-        summ_test  = summaries_from_model(model_hybrid1, w_hybrid1, x_te)
+        # obtain summaries from the final trained model
+        print(f"Generating summaries from compression stage {args.compression_stage} …")
+        summ_train = summaries_from_model(model_hybrid, w_hybrid, x_tr)
+        summ_val   = summaries_from_model(model_hybrid, w_hybrid, x_val)
+        summ_test  = summaries_from_model(model_hybrid, w_hybrid, x_te)
 
     elif experiment == "pk_bk_separate":
 
@@ -793,6 +775,8 @@ if __name__ == "__main__":
     parser.add_argument("--pk-cut", type=int, default=94)
     parser.add_argument("--mdn-components", type=int, default=7)
     parser.add_argument("--bk-summaries", type=int, default=7)
+    parser.add_argument("--compression-stage", type=int, default=1,
+                        help="Index of compression stage to test (0-based). Will cumulatively compress from indexes[0] to indexes[compression_stage].")
     parser.add_argument("--outfile", default="/data101/makinen/pk_cmass/compare_comp_16_01/")
     parser.add_argument("--device",  default="auto",
                         choices=["auto", "cpu", "cuda"])
