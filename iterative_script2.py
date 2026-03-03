@@ -135,8 +135,9 @@ def init_models(experiment: str,
             self.norm = nn.LayerNorm()
 
         def get_embed(self, x):
+            print(f"CompressPk using cut={self.cut}")
             x = get_pk(x, self.cut)
-            print("pk cut", x.shape)
+            print(f"pk shape after get_pk (cut + 10 for nbar): {x.shape}")
             x = self.mlp(x)
             return self.norm(x)
 
@@ -202,7 +203,7 @@ def init_models(experiment: str,
             #     res = self.pca_layer(x)
 
             pk = self.pk_net(x)
-            print("pk", pk.shape)
+            print(f"HybridNet: pk from previous stage shape={pk.shape}, processing bk inds={self.inds}")
             bk = self.mlp(get_bk(x, self.inds[0], self.inds[1]))
 
             if existing:
