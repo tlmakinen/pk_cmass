@@ -83,6 +83,8 @@ def mish(x):
     """
     return x * jnp.tanh(jax.nn.softplus(x))
 
+smooth_leaky = optimized_smooth_leaky
+
 # BASE RESIDUAL MLP MODEL
 class ResMLP(nn.Module):
     features: Sequence[int]
@@ -99,6 +101,73 @@ class ResMLP(nn.Module):
         x = nn.Dense(self.features[-1])(x)
         if self.activate_final:
             x = self.act(x)
+        return x
+
+
+class SpectrumConvEncoder(nn.Module):
+    """Two-layer 1D conv frontend for long 1D spectra.
+
+    Input shapes supported:
+      - (L,)
+      - (L, C)
+      - (B, L)
+      - (B, L, C)
+
+    Output:
+      - flattened feature vector for each example:
+        (features,) or (B, features)
+    """
+    conv_features1: int = 32
+    conv_features2: int = 64
+    kernel_size1: int = 9
+    kernel_size2: int = 5
+    stride1: int = 2
+    stride2: int = 2
+    activation: callable = nn.gelu
+    padding: str = "SAME"
+    use_layer_norm: bool = True
+
+    @nn.compact
+    def __call__(self, x):
+        x = jnp.asarray(x)
+
+        # Normalize shapes to (B, L, C)
+        added_batch = False
+        if x.ndim == 1:
+            x = x[None, :, None]      # (L,) -> (1, L, 1)
+            added_batch = True
+        elif x.ndim == 2:
+            x = x[:, :, None]         # (B, L) -> (B, L, 1)
+        elif x.ndim == 3:
+            pass                      # already (B, L, C)
+        else:
+            raise ValueError(f"Expected input ndim in {{1,2,3}}, got {x.ndim}")
+
+        x = nn.Conv(
+            features=self.conv_features1,
+            kernel_size=(self.kernel_size1,),
+            strides=(self.stride1,),
+            padding=self.padding,
+        )(x)
+        if self.use_layer_norm:
+            x = nn.LayerNorm()(x)
+        x = self.activation(x)
+
+        x = nn.Conv(
+            features=self.conv_features2,
+            kernel_size=(self.kernel_size2,),
+            strides=(self.stride2,),
+            padding=self.padding,
+        )(x)
+        if self.use_layer_norm:
+            x = nn.LayerNorm()(x)
+        x = self.activation(x)
+
+        x = x.reshape(x.shape[0], -1)
+
+        if added_batch:
+            x = x[0]
+
         return x
 
 
@@ -130,7 +199,15 @@ def init_models(experiment: str,
                            n_components=self.n_components,
                            n_dimension=self.n_params,
                            theta_star=jnp.array(theta_fid))
-            self.mlp = ResMLP(features=[500, 500, 500, self.n_summaries],
+            self.embed_net = SpectrumConvEncoder(
+                    conv_features1=32,
+                    conv_features2=64,
+                    kernel_size1=15,
+                    kernel_size2=7,
+                    stride1=4,
+                    stride2=2,
+                )
+            self.mlp = ResMLP(features=[200, 200, 200, self.n_summaries],
                               act=smooth_leaky)
             self.norm = nn.LayerNorm()
 
@@ -138,6 +215,7 @@ def init_models(experiment: str,
             print(f"CompressPk using cut={self.cut}")
             x = get_pk(x, self.cut)
             print(f"pk shape after get_pk (cut + 10 for nbar): {x.shape}")
+            x = self.embed_net(x)
             x = self.mlp(x)
             return self.norm(x)
 
@@ -159,12 +237,22 @@ def init_models(experiment: str,
                            n_components=self.n_components,
                            n_dimension=self.n_params,
                            theta_star=jnp.array(theta_fid))
-            self.mlp = ResMLP(features=[500, 500, 500, self.n_summaries],
+            self.embed_net = SpectrumConvEncoder(
+                    conv_features1=32,
+                    conv_features2=64,
+                    kernel_size1=15,
+                    kernel_size2=7,
+                    stride1=4,
+                    stride2=2,
+                )
+            self.mlp = ResMLP(features=[200, 200, 200, self.n_summaries],
                               act=smooth_leaky)
             self.norm = nn.LayerNorm()
 
         def get_embed(self, x):
-            bk = self.mlp(get_bk(x, self.inds[0], self.inds[1]))
+            bk = get_bk(x, self.inds[0], self.inds[1])
+            bk = self.embed_net(bk)
+            bk = self.mlp(bk)
             return self.norm(bk)
 
         def log_prob(self, x, theta):
@@ -188,12 +276,16 @@ def init_models(experiment: str,
                            n_components=self.n_components,
                            n_dimension=self.n_params,
                            theta_star=jnp.array(theta_fid))
-            self.mdn2 = MDN(hidden_channels=[128],
-                           n_components=self.n_components,
-                           n_dimension=self.n_params,
-                           theta_star=jnp.array(theta_fid))
-            self.mlp = ResMLP(features=[500, 500, 500, self.n_summaries],
-                              act=self.act)
+            self.embed_net = SpectrumConvEncoder(
+                    conv_features1=32,
+                    conv_features2=64,
+                    kernel_size1=15,
+                    kernel_size2=7,
+                    stride1=4,
+                    stride2=2,
+                )
+            self.mlp = ResMLP(features=[200, 200, 200, self.n_summaries],
+                              act=smooth_leaky)
             self.norm = nn.LayerNorm()
             self.norm2 = nn.LayerNorm()
             
@@ -204,7 +296,8 @@ def init_models(experiment: str,
 
             pk = self.pk_net(x)
             print(f"HybridNet: pk from previous stage shape={pk.shape}, processing bk inds={self.inds}")
-            bk = self.mlp(get_bk(x, self.inds[0], self.inds[1]))
+            bk = self.embed_net(get_bk(x, self.inds[0], self.inds[1]))
+            bk = self.mlp(bk)
 
             if existing:
                 return self.norm(jnp.concatenate([pk, bk], -1)), self.norm2(pk)
