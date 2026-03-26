@@ -57,7 +57,8 @@ def build_standardisers(x_train: np.ndarray):
 
     def get_pk(data, cut):
         data = (data - mean) / std
-        return jnp.concatenate([data[:cut], data[-10:]]) # concatenate nbar
+        # return jnp.concatenate([data[:cut], data[-10:]]) # concatenate nbar
+        return data[:cut]
 
     def get_bk(data, start, stop):
         data = (data - mean) / std
