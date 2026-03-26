@@ -125,7 +125,7 @@ class SpectrumConvEncoder(nn.Module):
     stride2: int = 2
     activation: callable = nn.gelu
     padding: str = "SAME"
-    use_layer_norm: bool = True
+    use_layer_norm: bool = False
 
     @nn.compact
     def __call__(self, x):
@@ -171,6 +171,25 @@ class SpectrumConvEncoder(nn.Module):
         return x
 
 
+class IdentityEmbed(nn.Module):
+    """Pass-through embedding (no conv); use when MLP sees raw 1D spectrum slice."""
+
+    @nn.compact
+    def __call__(self, x):
+        return jnp.asarray(x)
+
+
+def _spectrum_conv_encoder_default():
+    return SpectrumConvEncoder(
+        conv_features1=32,
+        conv_features2=64,
+        kernel_size1=15,
+        kernel_size2=7,
+        stride1=4,
+        stride2=2,
+    )
+
+
 # --------------------- MODEL HELPERS -----------------------------------------
 def init_models(experiment: str,
                 n_params: int,
@@ -181,7 +200,8 @@ def init_models(experiment: str,
                 theta_train: np.ndarray,
                 inds: Tuple = (0, 73),
                 pk_cut: int = 94,
-                pk_compress: Callable = None):
+                pk_compress: Callable = None,
+                use_cnn_embed: bool = True):
 
 
     theta_fid = theta_train.mean(0)
@@ -199,14 +219,7 @@ def init_models(experiment: str,
                            n_components=self.n_components,
                            n_dimension=self.n_params,
                            theta_star=jnp.array(theta_fid))
-            self.embed_net = SpectrumConvEncoder(
-                    conv_features1=32,
-                    conv_features2=64,
-                    kernel_size1=15,
-                    kernel_size2=7,
-                    stride1=4,
-                    stride2=2,
-                )
+            self.embed_net = _spectrum_conv_encoder_default() if use_cnn_embed else IdentityEmbed()
             self.mlp = ResMLP(features=[200, 200, 200, self.n_summaries],
                               act=smooth_leaky)
             self.norm = nn.LayerNorm()
@@ -237,14 +250,7 @@ def init_models(experiment: str,
                            n_components=self.n_components,
                            n_dimension=self.n_params,
                            theta_star=jnp.array(theta_fid))
-            self.embed_net = SpectrumConvEncoder(
-                    conv_features1=32,
-                    conv_features2=64,
-                    kernel_size1=15,
-                    kernel_size2=7,
-                    stride1=4,
-                    stride2=2,
-                )
+            self.embed_net = _spectrum_conv_encoder_default() if use_cnn_embed else IdentityEmbed()
             self.mlp = ResMLP(features=[200, 200, 200, self.n_summaries],
                               act=smooth_leaky)
             self.norm = nn.LayerNorm()
@@ -276,14 +282,7 @@ def init_models(experiment: str,
                            n_components=self.n_components,
                            n_dimension=self.n_params,
                            theta_star=jnp.array(theta_fid))
-            self.embed_net = SpectrumConvEncoder(
-                    conv_features1=32,
-                    conv_features2=64,
-                    kernel_size1=15,
-                    kernel_size2=7,
-                    stride1=4,
-                    stride2=2,
-                )
+            self.embed_net = _spectrum_conv_encoder_default() if use_cnn_embed else IdentityEmbed()
             self.mlp = ResMLP(features=[200, 200, 200, self.n_summaries],
                               act=smooth_leaky)
             self.norm = nn.LayerNorm()
@@ -529,6 +528,7 @@ def main(args):
     # different options     
 
     experiment = args.experiment
+    use_cnn_embed = args.embed == "cnn"
 
     global pk_net
 
@@ -574,7 +574,8 @@ def main(args):
                                   mdn_components=args.mdn_components,
                                   theta_train=th_tr,
                                   inds=indexes[0],
-                                  pk_cut=pk_cut_stage0)
+                                  pk_cut=pk_cut_stage0,
+                                  use_cnn_embed=use_cnn_embed)
     
         w_pk, _ = run_embedding_loop(model_pk, key,
                                      (x_tr, th_tr), (x_val, th_val),
@@ -592,7 +593,8 @@ def main(args):
                                       theta_train=th_tr,
                                       inds=indexes[0],
                                       pk_cut=pk_cut_stage0,
-                                      pk_compress=pk_net)
+                                      pk_compress=pk_net,
+                                      use_cnn_embed=use_cnn_embed)
     
         w_hybrid, _ = run_embedding_loop(model_hybrid, key,
                                         (x_tr, th_tr), (x_val, th_val),
@@ -615,7 +617,8 @@ def main(args):
                                           theta_train=th_tr,
                                           inds=indexes[stage_idx],
                                           pk_cut=pk_cut_current,
-                                          pk_compress=pk_net)
+                                          pk_compress=pk_net,
+                                          use_cnn_embed=use_cnn_embed)
 
             w_hybrid, _ = run_embedding_loop(model_hybrid, key,
                                             (x_tr, th_tr), (x_val, th_val),
@@ -636,7 +639,8 @@ def main(args):
                                              n_summs_bk=args.bk_summaries,
                                              mdn_components=args.mdn_components,
                                              theta_train=th_tr,
-                                             pk_cut=args.pk_cut)
+                                             pk_cut=args.pk_cut,
+                                             use_cnn_embed=use_cnn_embed)
     
         # train PK compressor ------------------------------------------------------
         print("Training Pk compressor …")
@@ -675,7 +679,8 @@ def main(args):
                                              n_summs_bk=args.bk_summaries,
                                              mdn_components=args.mdn_components,
                                              theta_train=th_tr,
-                                             pk_cut=args.pk_cut)
+                                             pk_cut=args.pk_cut,
+                                             use_cnn_embed=use_cnn_embed)
     
         # train PK compressor ------------------------------------------------------
         print("Training PK compressor …")
@@ -897,5 +902,12 @@ if __name__ == "__main__":
     parser.add_argument("--device",  default="auto",
                         choices=["auto", "cpu", "cuda"])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--embed",
+        choices=("cnn", "mlp"),
+        default="cnn",
+        help="Compressor first layer: 'cnn' = 1D conv SpectrumConvEncoder then ResMLP; "
+             "'mlp' = standardized PK/BK slice fed directly into ResMLP.",
+    )
 
     main(parser.parse_args())
