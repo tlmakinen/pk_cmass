@@ -1017,7 +1017,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--summaries-only",
-        action="store_false",
+        action="store_true",
         help="After saving summaries .npz, exit without training the NPE ensemble or running validation.",
     )
     parser.add_argument(
