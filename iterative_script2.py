@@ -8,7 +8,7 @@ from new_epe_code import *          # noqa: F403, provides EPEModel, MDN, etc.
 
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -37,6 +37,27 @@ HYBRID_BK_STAGE_INDEXES = (
     (188, 307),
     (307, 415),
 )
+
+
+def resolve_hybrid_bk_stage_indices(
+    cli_stages: Optional[List[str]],
+) -> Tuple[Tuple[int, int], ...]:
+    """
+    Return BK (start, stop) windows for each hybrid stage.
+    If cli_stages is empty/None, use HYBRID_BK_STAGE_INDEXES.
+    """
+    if not cli_stages:
+        return HYBRID_BK_STAGE_INDEXES
+    out: List[Tuple[int, int]] = []
+    for raw in cli_stages:
+        s = raw.strip()
+        if "," not in s:
+            raise ValueError(
+                f"Each --hybrid-bk-stage must be START,STOP (comma-separated), got {raw!r}"
+            )
+        a, _, b = s.partition(",")
+        out.append((int(a.strip()), int(b.strip())))
+    return tuple(out)
 
 
 # ----------------------- DATA -------------------------------------------------
@@ -672,7 +693,11 @@ def main(args):
 
     global pk_net
 
+    hybrid_stage_indexes_used: Optional[Tuple[Tuple[int, int], ...]] = None
+
     if experiment == "hybrid":
+        hybrid_stage_indexes_used = resolve_hybrid_bk_stage_indices(args.hybrid_bk_stage)
+        print(f"[hybrid] BK stage windows: {hybrid_stage_indexes_used}")
         key = jr.PRNGKey(args.seed)
         summ_train, summ_val, summ_test = run_hybrid_compression_summaries(
             x_tr,
@@ -684,7 +709,7 @@ def main(args):
             n_params=n_params,
             use_cnn_embed=use_cnn_embed,
             key=key,
-            stage_indexes=HYBRID_BK_STAGE_INDEXES,
+            stage_indexes=hybrid_stage_indexes_used,
         )
 
     elif experiment == "pk_bk_separate":
@@ -809,7 +834,9 @@ def main(args):
     }
     if experiment == "hybrid":
         save_extra["n_summs_hybrid"] = args.pk_summaries + args.bk_summaries
-        save_extra["hybrid_stage_indices"] = np.asarray(HYBRID_BK_STAGE_INDEXES, dtype=np.int64)
+        save_extra["hybrid_stage_indices"] = np.asarray(
+            hybrid_stage_indexes_used, dtype=np.int64
+        )
         save_extra["hybrid_pk_aux_weight"] = np.float64(args.hybrid_pk_aux_weight)
 
     np.savez(outfname, **save_extra)
@@ -998,6 +1025,18 @@ if __name__ == "__main__":
         type=float,
         default=0.0,
         help="HybridNet training only: loss += λ·log q(θ|s_pk). Default 0 preserves the original single-MDN objective and checkpoint layout.",
+    )
+    parser.add_argument(
+        "--hybrid-bk-stage",
+        action="append",
+        default=None,
+        dest="hybrid_bk_stage",
+        metavar="START,STOP",
+        help=(
+            "BK index window for one hybrid stage (same as get_bk(start, stop)). "
+            "Pass once per stage in order, e.g. --hybrid-bk-stage 63,126 --hybrid-bk-stage 126,188. "
+            "If omitted, uses HYBRID_BK_STAGE_INDEXES in the script."
+        ),
     )
 
     main(parser.parse_args())
